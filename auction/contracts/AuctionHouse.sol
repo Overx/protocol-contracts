@@ -17,7 +17,8 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
 
     uint256 private auctionId;          //unic. auction id
     address payable public wallet;      //to reserve ETH
-
+    address private nftTransferProxy;
+    address private erc20TransferProxy;
     AbstractFeesDataFromRTM feeData;
 
     uint256 private constant EXTENSION_DURATION = 15 minutes;
@@ -32,6 +33,9 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
         __Ownable_init_unchained();
         __TransferExecutor_init_unchained(_transferProxy, _erc20TransferProxy);
         _initializeAuctionId();
+        nftTransferProxy = address(_transferProxy);
+        erc20TransferProxy = address(_erc20TransferProxy);
+
         //TODO delete comments make code work again
         //        require(_exchangeV2Proxy != address(0), "_exchangeV2Proxy can't be zero");
         //        feeData = AbstractFeesDataFromRTM(_exchangeV2Proxy);
@@ -88,7 +92,22 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
             }
         }
         transfer(_sellAsset, _msgSender(), address(this), TO_LOCK, LOCK);
+        setApproveForTransferProxy(_sellAsset);
         emit AuctionCreated(currenAuctionId, auctions[currenAuctionId]);
+    }
+
+    function setApproveForTransferProxy(LibAsset.Asset memory _asset) internal {
+        if (_asset.assetType.assetClass == LibAsset.ERC20_ASSET_CLASS) {
+            (address token) = abi.decode(_asset.assetType.data, (address));
+            IERC20Upgradeable(token).approve(erc20TransferProxy, _asset.value);
+        } else if (_asset.assetType.assetClass == LibAsset.ERC721_ASSET_CLASS) {
+            (address token, uint tokenId) = abi.decode(_asset.assetType.data, (address, uint256));
+            require(_asset.value == 1, "erc721 value error");
+            IERC721Upgradeable(token).setApprovalForAll(nftTransferProxy, true);
+        } else if (_asset.assetType.assetClass == LibAsset.ERC1155_ASSET_CLASS) {
+            (address token,) = abi.decode(_asset.assetType.data, (address, uint256));
+            IERC1155Upgradeable(token).setApprovalForAll(nftTransferProxy, true);
+        }
     }
 
     //put a bid and return locked assets for the last bid
@@ -141,9 +160,18 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
         reservedAsset.value = newAmount;
         if (reservedAsset.assetType.assetClass == LibAsset.ETH_ASSET_CLASS) {
             transfer(reservedAsset, address(0x0), wallet, TO_LOCK, LOCK);
-        } else {
+        } else if (reservedAsset.assetType.assetClass == LibAsset.ERC20_ASSET_CLASS) {
             transfer(reservedAsset, newBuyer, address(this), TO_LOCK, LOCK);
+            (address token) = abi.decode(_buyAssetType.data, (address));
+            IERC20Upgradeable(token).approve(erc20TransferProxy, newAmount);
         }
+    }
+
+    function transferAmount(LibAsset.AssetType memory _assetType, address from, address to, uint amount, bytes4 _direction, bytes4 _type) internal {
+        LibAsset.Asset memory _asset;
+        _asset.assetType = _assetType;
+        _asset.value = amount;
+        transfer(_asset, from, to, _direction, _type);
     }
 
     //cancel auction without bid
@@ -151,7 +179,7 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
 
     }
 
-    //checks if auction is valid 
+    //checks if auction is valid
     //(e.g. it started, wasn't canceled, didn't finish)
     function isAuctionValid() internal {
 
@@ -159,14 +187,27 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
 
     //tranfers funds
     //deletes data?
-    function finishAuction() public {
-
+    function finishAuction(uint _auctionId) payable public onlyOwner {
+        require(checkAuctionExistance(_auctionId), "there is no auction with this id");
+        Auction storage currentAuction = auctions[_auctionId];
+        if (currentAuction.buyer == address(0x0)) {//no bid at all
+            transfer(currentAuction.sellAsset, address(this), currentAuction.seller, TO_SELLER, UNLOCK);//nft back to seller
+        } else {
+            transfer(currentAuction.sellAsset, address(this), currentAuction.buyer, TO_BIDDER, PAYOUT);//nft to buyer
+            if (currentAuction.buyAsset.assetClass == LibAsset.ETH_ASSET_CLASS) {
+                transferAmount(currentAuction.buyAsset, wallet, currentAuction.seller, currentAuction.lastBid.amount, TO_SELLER, PAYOUT);
+            } else {
+                transferAmount(currentAuction.buyAsset, address(this), currentAuction.seller, currentAuction.lastBid.amount, TO_SELLER, PAYOUT);
+            }
+        }
+        deactivateAuction(_auctionId);
+        emit AuctionFinished( _auctionId);
     }
 
 
     //buyout and finish auction
     function buyOut() public {
-        finishAuction();
+//        finishAuction();
     }
 
     function returnBid(uint _auctionId) internal {
@@ -194,6 +235,10 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
         } else {
             return true;
         }
+    }
+
+    function deactivateAuction(uint _auctionId) internal {
+        auctions[_auctionId].seller == address(0);
     }
 
     uint256[50] private ______gap;
