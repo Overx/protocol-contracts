@@ -152,11 +152,17 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
             LibAsset.Asset memory returnAsset;
             returnAsset.assetType = _buyAssetType;
             returnAsset.value = oldAmount;
-            transfer(returnAsset, address(this), oldBuyer, TO_LOCK, UNLOCK);
+            if ((returnAsset.assetType.assetClass == LibAsset.ETH_ASSET_CLASS) && (returnAsset.value == 10)) {
+                transfer(returnAsset, address(0x0), oldBuyer, TO_LOCK, UNLOCK);
+            } else {
+                transfer(returnAsset, address(this), oldBuyer, TO_LOCK, UNLOCK);
+            }
         }
         //send reserved to contract
         LibAsset.Asset memory reservedAsset;
         reservedAsset.assetType = _buyAssetType;
+//        reservedAsset.value = newAmount - oldAmount; TODO do it, now spend more ether than need
+        //todo use function to transfer ether, which send ether back, when ether more, than need
         reservedAsset.value = newAmount;
         if (reservedAsset.assetType.assetClass == LibAsset.ETH_ASSET_CLASS) {
             transfer(reservedAsset, address(0x0), wallet, TO_LOCK, LOCK);
