@@ -113,28 +113,28 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
     //put a bid and return locked assets for the last bid
     function putBid(uint _auctionId, Bid memory bid) payable external {
         require(checkAuctionExistance(_auctionId), "there is no auction with this id");
-        address payable bidPlacer = _msgSender();
-        if (buyOutVerify(_auctionId, bidPlacer)) {
+        address payable newBuyer = _msgSender();
+        uint newAmount = bid.amount;
+        if (buyOutVerify(_auctionId, newAmount)) {
             //set auction finished
         }
         Auction storage currentAuction = auctions[_auctionId];
         uint currentTime = block.timestamp;
-        uint _buyAssetValue = bid.amount;
         LibAucDataV1.DataV1 memory aucData = LibAucDataV1.parse(currentAuction.data, currentAuction.dataType);
 
         //start action if minimal price is met
         if (currentAuction.buyer == address(0x0)) {//no bid at all
-            require(_buyAssetValue >= currentAuction.minimalPrice, "bid can't be less than minimal price");
+            require(newAmount >= currentAuction.minimalPrice, "bid can't be less than minimal price");
             currentAuction.endTime = currentTime + aucData.duration;
         } else {    //there is bid in auction
             require(currentAuction.endTime >= currentTime, "NFTMarketReserveAuction: Auction is over");
-            require(currentAuction.buyer != bidPlacer, "NFTMarketReserveAuction: You already have an outstanding bid");
+            require(currentAuction.buyer != newBuyer, "NFTMarketReserveAuction: You already have an outstanding bid");
             uint256 minAmount = getMinimalNextBid(_auctionId);
-            require(_buyAssetValue >= minAmount, "NFTMarketReserveAuction: Bid amount too low");
+            require(newAmount >= minAmount, "NFTMarketReserveAuction: Bid amount too low");
         }
-        reserveValue(currentAuction.buyAsset, currentAuction.buyer, bidPlacer, currentAuction.lastBid.amount, _buyAssetValue);
-        currentAuction.lastBid.amount = _buyAssetValue;
-        currentAuction.buyer = bidPlacer;
+        reserveValue(currentAuction.buyAsset, currentAuction.buyer, newBuyer, currentAuction.lastBid.amount, newAmount);
+        currentAuction.lastBid.amount = newAmount;
+        currentAuction.buyer = newBuyer;
         //extend auction if time left < EXTENSION_DURATION
         if (currentAuction.endTime - currentTime < EXTENSION_DURATION) {
             currentAuction.endTime = currentTime + EXTENSION_DURATION;
@@ -142,8 +142,10 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
         emit BidPlaced(_auctionId);
     }
 
-    function buyOutVerify(uint _auctionId, address payable _buyAssetValue) internal returns (bool) {
-        return true;
+    function saveBid(Auction memory _auction, address payable newBuyer, uint amount) internal {
+        reserveValue(_auction.buyAsset, _auction.buyer, newBuyer, _auction.lastBid.amount, amount);
+        _auction.lastBid.amount = amount;
+        _auction.buyer = newBuyer;
     }
 
     function reserveValue(LibAsset.AssetType memory _buyAssetType, address oldBuyer, address newBuyer, uint oldAmount, uint newAmount) internal {
@@ -212,9 +214,25 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
 
 
     //buyout and finish auction
-    function buyOut() public {
-//        finishAuction();
+    function buyOut(uint _auctionId, Bid memory bid) public {
+        require(checkAuctionExistance(_auctionId), "there is no auction with this id");
+        require(checkAuctionFinishTime(_auctionId), "auction finished");
+        uint newAmount = bid.amount;
+        address payable newBuyer = _msgSender();
+        require(buyOutVerify(_auctionId, newAmount), "not enough for buyout auction");
+        saveBid(auctions[_auctionId], newBuyer, newAmount);
+        finishAuction(_auctionId);
     }
+
+    function buyOutVerify(uint _auctionId, uint newAmount) internal returns (bool) {
+        Auction storage currentAuction = auctions[_auctionId];
+        LibAucDataV1.DataV1 memory aucData = LibAucDataV1.parse(currentAuction.data, currentAuction.dataType);
+        if (aucData.buyOutPrice <= newAmount) {
+            return true;
+        }
+        return false;
+    }
+
 
     function returnBid(uint _auctionId) internal {
         uint toReturn = getCurrentBidWithFees(_auctionId);
@@ -237,6 +255,14 @@ contract AuctionHouse is AuctionHouseBase, Initializable, OwnableUpgradeable, Tr
 
     function checkAuctionExistance(uint _auctionId) internal view returns (bool){
         if (auctions[_auctionId].seller == address(0)) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+    function checkAuctionFinishTime(uint _auctionId) internal view returns (bool){
+        if (auctions[_auctionId].endTime < block.timestamp) {
             return false;
         } else {
             return true;
